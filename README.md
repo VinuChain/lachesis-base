@@ -23,7 +23,7 @@ The upstream lachesis-base had several issues that required fixes not accepted o
 - **Election test fix** — corrected a decisive roots assertion in the election test to match actual BFT quorum behavior, and extended the test DAG with additional frames for better coverage.
 
 ### Dependency alignment
-- Pinned Go and dependency versions to match VinuChain's module graph (`go 1.14`, older Pebble, LevelDB, and testify versions), avoiding diamond dependency conflicts.
+- Aligned Go and dependency versions to match VinuChain's module graph (Go 1.25.8, testify v1.8.4, goleveldb 2022-06-14, golang-lru v0.5.5), avoiding diamond dependency conflicts.
 
 ## Package structure
 
@@ -48,7 +48,7 @@ The upstream lachesis-base had several issues that required fixes not accepted o
 This module is consumed via a `replace` directive in VinuChain's `go.mod`:
 
 ```
-replace github.com/Fantom-foundation/lachesis-base => github.com/VinuChain/lachesis-base v0.1.0-elemont
+replace github.com/Fantom-foundation/lachesis-base => github.com/VinuChain/lachesis-base v0.1.1-elemont
 ```
 
 The module path remains `github.com/Fantom-foundation/lachesis-base` for compatibility with existing imports throughout the VinuChain codebase (inherited from the upstream go-opera fork).
@@ -65,7 +65,8 @@ There is no standalone binary. All packages are library code imported by VinuCha
 
 | Tag | Description |
 |-----|-------------|
-| `v0.1.0-elemont` | Initial VinuChain fork with stream hardening, KV store fixes, and dependency alignment |
+| `v0.1.1-elemont` | Dependency alignment: Go 1.25.8, testify v1.8.4, goleveldb, golang-lru |
+| `v0.1.0-elemont` | Initial VinuChain fork with stream hardening, KV store fixes |
 
 ## License
 
