@@ -1,6 +1,8 @@
 package lachesis
 
 import (
+	"errors"
+
 	"github.com/ethereum/go-ethereum/rlp"
 
 	"github.com/Fantom-foundation/lachesis-base/inter/idx"
@@ -28,4 +30,25 @@ func (s Cheaters) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 func (s Cheaters) GetRlp(i int) []byte {
 	enc, _ := rlp.EncodeToBytes(s[i])
 	return enc
+}
+
+// Validate checks the cheaters list for consistency. maxValidatorID is the
+// largest validator ID currently known; pass 0 to skip the upper-bound check.
+// Returns an error if the list contains a zero ID, a duplicate ID, or an ID
+// that exceeds maxValidatorID (when maxValidatorID > 0).
+func (s Cheaters) Validate(maxValidatorID idx.ValidatorID) error {
+	seen := make(map[idx.ValidatorID]struct{}, len(s))
+	for _, id := range s {
+		if id == 0 {
+			return errors.New("cheaters list contains zero validator ID")
+		}
+		if maxValidatorID > 0 && id > maxValidatorID {
+			return errors.New("cheaters list contains out-of-range validator ID")
+		}
+		if _, dup := seen[id]; dup {
+			return errors.New("cheaters list contains duplicate validator ID")
+		}
+		seen[id] = struct{}{}
+	}
+	return nil
 }

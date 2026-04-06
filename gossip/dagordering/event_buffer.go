@@ -23,11 +23,17 @@ type (
 
 	// Callback is a set of EventsBuffer()'s args.
 	Callback struct {
-		Process  func(e dag.Event) error
-		Released func(e dag.Event, peer string, err error)
-		Get      func(hash.Event) dag.Event
-		Exists   func(hash.Event) bool
-		Check    func(e dag.Event, parents dag.Events) error
+		Process     func(e dag.Event) error
+		Released    func(e dag.Event, peer string, err error)
+		Get         func(hash.Event) dag.Event
+		Exists      func(hash.Event) bool
+		Check       func(e dag.Event, parents dag.Events) error
+		// IsImportant, if non-nil, marks events that must not be silently
+		// evicted during a buffer spill (e.g. events carrying misbehaviour
+		// proofs). The spill logic will evict non-important events first and
+		// will only evict important events when no non-important candidates
+		// remain.
+		IsImportant func(e dag.Event) bool
 	}
 )
 
@@ -59,8 +65,10 @@ func (buf *EventsBuffer) PushEvent(de dag.Event, peer string) (complete bool) {
 	buf.mu.Lock()
 	defer buf.mu.Unlock()
 
+	// First duplicate check: event is still waiting in the incomplete buffer.
+	// This covers the common case where a peer re-sends an event we haven't
+	// connected yet.
 	if _, ok := buf.incompletes.Peek(e.event.ID()); ok {
-		// duplicate
 		buf.dropEvent(e, eventcheck.ErrDuplicateEvent)
 		buf.releaseEvent(e)
 		return false
@@ -71,6 +79,10 @@ func (buf *EventsBuffer) PushEvent(de dag.Event, peer string) (complete bool) {
 }
 
 func (buf *EventsBuffer) pushEvent(e *event, incompleteEventsList []*event, recheck bool) bool {
+	// Second duplicate check: event was already fully processed and is known to
+	// the application (Exists returns true). This handles the race where the
+	// first arrival completes processing between the two checks — returning
+	// ErrAlreadyConnectedEvent is correct and does not drop a legitimate event.
 	if buf.callback.Exists(e.event.ID()) {
 		buf.incompletes.Remove(e.event.ID())
 		if !recheck {
@@ -154,14 +166,52 @@ func (buf *EventsBuffer) processCompleteEvent(e *event, parents dag.Events) bool
 }
 
 func (buf *EventsBuffer) spillIncompletes(limit dag.Metric) {
+	if buf.callback.IsImportant == nil {
+		// Fast path: no importance distinction, evict oldest unconditionally.
+		for idx.Event(buf.incompletes.Len()) > limit.Num || uint64(buf.incompletes.Weight()) > limit.Size {
+			_, val, ok := buf.incompletes.RemoveOldest()
+			if !ok {
+				break
+			}
+			e := val.(*event)
+			buf.dropEvent(e, eventcheck.ErrSpilledEvent)
+			buf.releaseEvent(e)
+		}
+		return
+	}
+
+	// Slow path: protect important events (e.g. those carrying misbehaviour
+	// proofs) by evicting non-important events first.
 	for idx.Event(buf.incompletes.Len()) > limit.Num || uint64(buf.incompletes.Weight()) > limit.Size {
-		_, val, ok := buf.incompletes.RemoveOldest()
-		if !ok {
+		evicted := false
+		// Walk from oldest to newest; evict the first non-important event.
+		keys := buf.incompletes.Keys()
+		for _, k := range keys {
+			val, ok := buf.incompletes.Peek(k)
+			if !ok {
+				continue
+			}
+			e := val.(*event)
+			if buf.callback.IsImportant(e.event) {
+				continue
+			}
+			buf.incompletes.Remove(k)
+			buf.dropEvent(e, eventcheck.ErrSpilledEvent)
+			buf.releaseEvent(e)
+			evicted = true
 			break
 		}
-		e := val.(*event)
-		buf.dropEvent(e, eventcheck.ErrSpilledEvent)
-		buf.releaseEvent(e)
+		if !evicted {
+			// All remaining events are important; evict the oldest one to
+			// prevent unbounded growth.
+			_, val, ok := buf.incompletes.RemoveOldest()
+			if !ok {
+				break
+			}
+			e := val.(*event)
+			buf.dropEvent(e, eventcheck.ErrSpilledEvent)
+			buf.releaseEvent(e)
+		}
 	}
 }
 

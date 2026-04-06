@@ -7,6 +7,15 @@ import (
 // wrapper is a kvdb.Store wrapper around any kvdb.Store.
 // It ignores some errors of underlying store.
 // NOTE: ignoring is not implemented at Iterator, Batch, .
+//
+// Epoch DB concurrent-reader safety: when an epoch's DB is dropped at the end
+// of an epoch, goroutines that still hold a reference may call Get/Has/Put.
+// LevelDB (and compatible backends) return errors (not panics) in this case.
+// Callers wrap the epoch store tables with Wrap(..., errDBClosed) so those
+// errors are suppressed, making concurrent readers safe to use without
+// synchronisation against epoch transitions. Panics from double-Close or
+// Drop-without-Close are prevented by the epoch lifecycle in gossip/store_epoch.go,
+// which always calls Close() before Drop() under the epoch store's own mutex.
 type wrapper struct {
 	readWrapper
 	underlying kvdb.Store
