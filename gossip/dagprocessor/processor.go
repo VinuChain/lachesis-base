@@ -41,6 +41,7 @@ type EventCallback struct {
 	Exists          func(hash.Event) bool
 	CheckParents    func(e dag.Event, parents dag.Events) error
 	CheckParentless func(e dag.Event, checked func(error))
+	IsImportant     func(e dag.Event) bool
 }
 
 type Callback struct {
@@ -64,11 +65,12 @@ func New(eventsSemaphore *datasemaphore.DataSemaphore, cfg Config, callback Call
 	}
 	f.callback = callback
 	f.buffer = dagordering.New(cfg.EventsBufferLimit, dagordering.Callback{
-		Process:  callback.Event.Process,
-		Released: callback.Event.Released,
-		Get:      callback.Event.Get,
-		Exists:   callback.Event.Exists,
-		Check:    callback.Event.CheckParents,
+		Process:     callback.Event.Process,
+		Released:    callback.Event.Released,
+		Get:         callback.Event.Get,
+		Exists:      callback.Event.Exists,
+		Check:       callback.Event.CheckParents,
+		IsImportant: callback.Event.IsImportant,
 	})
 	f.orderedInserter = workers.New(&f.wg, f.quit, cfg.MaxTasks)
 	f.checker = workers.New(&f.wg, f.quit, cfg.MaxTasks)
