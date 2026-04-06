@@ -24,7 +24,6 @@ type BaseSeeder struct {
 	notifyUnregisteredPeer chan string
 	notifyReceivedRequest  chan *requestAndPeer
 	quit                   chan struct{}
-	done                   bool
 
 	cfg Config
 
@@ -98,7 +97,6 @@ func (s *BaseSeeder) Start() {
 // Stop waits until all the internal goroutines have finished.
 func (s *BaseSeeder) Stop() {
 	close(s.quit)
-	s.done = true
 	for i := 0; i < s.cfg.SenderThreads; i++ {
 		s.senders[i].Drain()
 	}
