@@ -2,6 +2,7 @@ package basestreamleecher
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,6 +22,8 @@ type BaseLeecher struct {
 	Mu *sync.RWMutex
 
 	Terminated bool
+
+	terminated atomic.Bool
 }
 
 // New creates a generic items downloader
@@ -119,7 +122,9 @@ func (d *BaseLeecher) Terminate() {
 	defer d.Mu.Unlock()
 
 	d.Terminated = true
-	close(d.Quit)
+	if d.terminated.CompareAndSwap(false, true) {
+		close(d.Quit)
+	}
 	d.callback.TerminateSession()
 }
 
