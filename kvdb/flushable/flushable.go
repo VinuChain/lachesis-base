@@ -181,6 +181,8 @@ func (w *Flushable) NotFlushedPairs() int {
 
 // NotFlushedSizeEst returns estimation of not flushed data, including deleted keys.
 func (w *Flushable) NotFlushedSizeEst() int {
+	w.lock.RLock()
+	defer w.lock.RUnlock()
 	return *w.sizeEstimation
 }
 
