@@ -155,6 +155,17 @@ func (f *Processor) Enqueue(peer string, events dag.Events, ordered bool, notify
 				}
 
 			case <-f.quit:
+				// Drain remaining checked events so Released callbacks
+				// fire and semaphore slots are freed.
+				for processed < eventsLen {
+					select {
+					case res := <-checkedC:
+						f.callback.Event.Released(res.e, peer, ErrBusy)
+						processed++
+					default:
+						processed = eventsLen
+					}
+				}
 				return
 			}
 		}
