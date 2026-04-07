@@ -34,7 +34,13 @@ func (s *DataSemaphore) Acquire(weight dag.Metric, timeout time.Duration) bool {
 		if weight.Size > s.maxProcessing.Size || weight.Num > s.maxProcessing.Num || time.Now().After(deadline) {
 			return false
 		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false
+		}
+		timer := time.AfterFunc(remaining, s.cond.Broadcast)
 		s.cond.Wait()
+		timer.Stop()
 	}
 	return true
 }
