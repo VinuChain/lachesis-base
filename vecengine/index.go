@@ -102,6 +102,14 @@ func (vi *Engine) setForkDetected(before HighestBeforeI, branchID idx.Validator)
 	}
 }
 
+// maxBranchesPerValidator caps how many global branch IDs a single validator
+// may accumulate. Without this cap, a Byzantine validator can equivocate
+// without limit, growing the BranchIDCreatorIdxs slice and widening every
+// HighestBefore/LowestAfter vector on all honest nodes (O(k·n) memory and
+// CPU where k = branches, n = validators), causing a DoS without breaking
+// consensus safety.
+const maxBranchesPerValidator = 1024
+
 func (vi *Engine) fillGlobalBranchID(e dag.Event, meIdx idx.Validator) (idx.Validator, error) {
 	// sanity checks
 	if len(vi.bi.BranchIDCreatorIdxs) != len(vi.bi.BranchIDLastSeq) {
@@ -133,6 +141,20 @@ func (vi *Engine) fillGlobalBranchID(e dag.Event, meIdx idx.Validator) (idx.Vali
 	}
 
 	// if we're here, then new fork is observed (only globally), create new branchID due to a new fork
+
+	// Byzantine DoS guard: if this validator already has the maximum number of
+	// branches, reuse its most recent branch rather than allocating a new global
+	// branch ID. This keeps vector widths bounded while preserving safety — the
+	// validator is already known to be a cheater, so accuracy of its branch
+	// tracking beyond the cap does not affect consensus correctness.
+	if len(vi.bi.BranchIDByCreators[meIdx]) >= maxBranchesPerValidator {
+		lastBranch := vi.bi.BranchIDByCreators[meIdx][len(vi.bi.BranchIDByCreators[meIdx])-1]
+		if e.Seq() > vi.bi.BranchIDLastSeq[lastBranch] {
+			vi.bi.BranchIDLastSeq[lastBranch] = e.Seq()
+		}
+		return lastBranch, nil
+	}
+
 	vi.bi.BranchIDLastSeq = append(vi.bi.BranchIDLastSeq, e.Seq())
 	vi.bi.BranchIDCreatorIdxs = append(vi.bi.BranchIDCreatorIdxs, meIdx)
 	newBranchID := idx.Validator(len(vi.bi.BranchIDLastSeq) - 1)
