@@ -100,6 +100,54 @@ func TestFillGlobalBranchID_CapLimitsByzantineGrowth(t *testing.T) {
 	}
 }
 
+// TestFillGlobalBranchID_CapDoesNotRegressLastSeq verifies that when the cap is
+// reached and an event with a lower seq arrives, BranchIDLastSeq is not
+// overwritten with the smaller value. This pins the max-seq invariant that the
+// self-parent sequence check in fillGlobalBranchID depends on.
+func TestFillGlobalBranchID_CapDoesNotRegressLastSeq(t *testing.T) {
+	creatorID := idx.ValidatorID(1)
+	vi, meIdx := buildMinimalEngine(creatorID)
+
+	// Fill the validator up to the cap with ascending seqs.
+	highSeq := idx.Event(maxBranchesPerValidator + 100)
+	for i := 0; i < maxBranchesPerValidator; i++ {
+		var id [32]byte
+		id[0] = byte(i)
+		id[1] = byte(i >> 8)
+		e := &forkEvent{
+			creator: creatorID,
+			seq:     idx.Event(i + 2),
+			id:      hash.Event(id),
+		}
+		if _, err := vi.fillGlobalBranchID(e, meIdx); err != nil {
+			t.Fatalf("setup: unexpected error at iteration %d: %v", i, err)
+		}
+	}
+
+	// Record the last-seq after filling.
+	lastBranch := vi.bi.BranchIDByCreators[meIdx][len(vi.bi.BranchIDByCreators[meIdx])-1]
+	vi.bi.BranchIDLastSeq[lastBranch] = highSeq
+
+	// Now send an event with a lower seq — it must not reduce BranchIDLastSeq.
+	var oldID [32]byte
+	oldID[0] = 0xff
+	lowSeqEvent := &forkEvent{
+		creator: creatorID,
+		seq:     2, // very low
+		id:      hash.Event(oldID),
+	}
+	if _, err := vi.fillGlobalBranchID(lowSeqEvent, meIdx); err != nil {
+		t.Fatalf("unexpected error on low-seq event: %v", err)
+	}
+
+	if got := vi.bi.BranchIDLastSeq[lastBranch]; got != highSeq {
+		t.Errorf(
+			"BranchIDLastSeq regressed: got %d, want %d (high-seq invariant violated)",
+			got, highSeq,
+		)
+	}
+}
+
 // TestFillGlobalBranchID_HonestValidatorUnaffected verifies that a single honest
 // validator (no forks) still gets exactly one branch and the cap is never triggered.
 func TestFillGlobalBranchID_HonestValidatorUnaffected(t *testing.T) {
