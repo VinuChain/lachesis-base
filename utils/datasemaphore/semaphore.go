@@ -93,8 +93,21 @@ func (s *DataSemaphore) Processing() dag.Metric {
 func (s *DataSemaphore) Available() dag.Metric {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return dag.Metric{
-		Num:  s.maxProcessing.Num - s.processing.Num,
-		Size: s.maxProcessing.Size - s.processing.Size,
+	// After Terminate(), maxProcessing is the zero metric. Return zero
+	// immediately rather than allowing the unsigned subtraction to wrap.
+	if s.maxProcessing == (dag.Metric{}) {
+		return dag.Metric{}
 	}
+	var available dag.Metric
+	if s.processing.Num > s.maxProcessing.Num {
+		available.Num = 0
+	} else {
+		available.Num = s.maxProcessing.Num - s.processing.Num
+	}
+	if s.processing.Size > s.maxProcessing.Size {
+		available.Size = 0
+	} else {
+		available.Size = s.maxProcessing.Size - s.processing.Size
+	}
+	return available
 }
