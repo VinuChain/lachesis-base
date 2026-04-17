@@ -155,14 +155,31 @@ func (f *Processor) Enqueue(peer string, events dag.Events, ordered bool, notify
 				}
 
 			case <-f.quit:
-				// Drain remaining checked events so Released callbacks fire and
-				// semaphore slots are freed. Block unconditionally: checkedC is
-				// buffered to len(events), so writes from async CheckParentless
-				// callbacks never block and every pending result will arrive.
-				for processed < eventsLen {
-					res := <-checkedC
-					f.callback.Event.Released(res.e, peer, ErrBusy)
-					processed++
+				// Drain any results already in checkedC (non-blocking), then
+				// release every event that was never written to the channel.
+				// This covers two cases:
+				//   (a) CheckParentless callbacks are in-flight but not yet
+				//       written (checkedC partially filled).
+				//   (b) The checker worker exited via <-quit before running its
+				//       queued task entirely, so checkedC has zero entries.
+				// Using a blocking receive for (b) would deadlock Stop().
+				seen := make([]bool, eventsLen)
+			drainCheckedC:
+				for {
+					select {
+					case res := <-checkedC:
+						if !seen[int(res.pos)] {
+							seen[int(res.pos)] = true
+							f.callback.Event.Released(res.e, peer, ErrBusy)
+						}
+					default:
+						break drainCheckedC
+					}
+				}
+				for i, e := range events {
+					if !seen[i] {
+						f.callback.Event.Released(e, peer, ErrBusy)
+					}
 				}
 				return
 			}

@@ -280,6 +280,114 @@ func TestQuitDrainsAllInFlightEvents(t *testing.T) {
 	_ = enqueueDone
 }
 
+// TestQuitBeforeCheckerRuns covers the deadlock path where the orderedInserter
+// task enters its quit drain but checkedC has fewer entries than eventsLen
+// because the checker exited before processing its queued task.
+//
+// The test simulates this by making CheckParentless spawn goroutines that only
+// write to checkedC AFTER a gate is opened. The gate is never opened — so
+// checkedC stays empty. The orderedInserter enters case <-f.quit: and hits
+//
+//	for processed < eventsLen { res := <-checkedC }  // blocks forever
+//
+// A 2-second timeout detects the deadlock. After the fix, the drain must
+// release events that were never written to checkedC and return promptly.
+func TestQuitBeforeCheckerRuns(t *testing.T) {
+	nodes := tdag.GenNodes(2)
+	var events dag.Events
+	_ = tdag.ForEachRandEvent(nodes, 5, 1, nil, tdag.ForEachEvent{
+		Process: func(e dag.Event, name string) { events = append(events, e) },
+		Build: func(e dag.MutableEvent, name string) error {
+			e.SetEpoch(1)
+			e.SetFrame(idx.Frame(e.Seq()))
+			return nil
+		},
+	})
+	if len(events) == 0 {
+		t.Fatal("no events generated")
+	}
+
+	limit := dag.Metric{Num: idx.Event(len(events) + 1), Size: uint64(len(events)+1) * 1000}
+	semaphore := datasemaphore.New(limit, func(received dag.Metric, processing dag.Metric, releasing dag.Metric) {
+		t.Error("events semaphore inconsistency")
+	})
+	config := DefaultConfig(cachescale.Identity)
+	config.EventsBufferLimit = limit
+	config.MaxTasks = 128
+
+	var released int32
+
+	// gate is intentionally never closed: CheckParentless goroutines park here
+	// forever, so checkedC receives zero writes — exactly what happens when the
+	// checker goroutine exits via <-quit before running its queued task.
+	gate := make(chan struct{})
+
+	// checkerStarted is closed on the first CheckParentless call so we know the
+	// checker task IS running before we call Stop(). This ensures the
+	// orderedInserter task also started (both tasks were submitted together) and
+	// is blocked in its select loop waiting on checkedC.
+	checkerStarted := make(chan struct{})
+	checkerStartedOnce := sync.Once{}
+
+	processor := New(semaphore, config, Callback{
+		Event: EventCallback{
+			Process: func(e dag.Event) error { return nil },
+			Released: func(e dag.Event, peer string, err error) {
+				atomic.AddInt32(&released, 1)
+			},
+			Exists:       func(e hash.Event) bool { return false },
+			Get:          func(id hash.Event) dag.Event { return nil },
+			CheckParents: func(e dag.Event, parents dag.Events) error { return nil },
+			CheckParentless: func(e dag.Event, checked func(err error)) {
+				checkerStartedOnce.Do(func() { close(checkerStarted) })
+				// Spawn a goroutine that parks on gate forever — simulating
+				// a checker that queues the callback but never delivers it.
+				go func() {
+					<-gate // never fires
+					checked(nil)
+				}()
+			},
+			IsImportant: func(e dag.Event) bool { return false },
+		},
+		HighestLamport: func() idx.Lamport { return idx.Lamport(100) },
+	})
+
+	processor.Start()
+
+	if err := processor.Enqueue("peer0", events, false, nil, nil); err != nil {
+		t.Fatalf("Enqueue failed: %v", err)
+	}
+
+	// Wait until CheckParentless is called at least once. At this point:
+	//   - The checker task is running.
+	//   - The orderedInserter task has started and is blocked in its select loop
+	//     (waiting on checkedC, which is empty).
+	select {
+	case <-checkerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("checker did not start within 5s")
+	}
+
+	// Stop() with gate closed forever: orderedInserter enters case <-f.quit:,
+	// then blocks on res := <-checkedC with 0 entries. Deadlock without the fix.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		processor.Stop()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() deadlocked — orderedInserter blocked on empty checkedC after checker exit")
+	}
+
+	got := int(atomic.LoadInt32(&released))
+	if got != len(events) {
+		t.Fatalf("Released called %d times, want %d — semaphore slots leaked", got, len(events))
+	}
+}
+
 func TestProcessorReleasing(t *testing.T) {
 	for try := int64(0); try < 100; try++ {
 		testProcessorReleasing(t, 200, try)
