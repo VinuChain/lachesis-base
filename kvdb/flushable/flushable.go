@@ -222,10 +222,12 @@ func (w *Flushable) flush() error {
 			batch.Reset()
 		}
 	}
+	if err := batch.Write(); err != nil {
+		return err
+	}
 	w.modified.Clear()
 	*w.sizeEstimation = 0
-
-	return batch.Write()
+	return nil
 }
 
 // Stat returns a particular internal stat of the database.

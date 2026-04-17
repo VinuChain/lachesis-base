@@ -2,6 +2,7 @@ package flushable
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"math/big"
@@ -12,10 +13,12 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/syndtr/goleveldb/leveldb/opt"
 
 	"github.com/Fantom-foundation/lachesis-base/common/bigendian"
 	"github.com/Fantom-foundation/lachesis-base/kvdb"
+	"github.com/Fantom-foundation/lachesis-base/kvdb/devnulldb"
 	"github.com/Fantom-foundation/lachesis-base/kvdb/leveldb"
 	"github.com/Fantom-foundation/lachesis-base/kvdb/table"
 )
@@ -405,4 +408,79 @@ func dbProducer(name string) kvdb.DBProducer {
 		panic(err)
 	}
 	return leveldb.NewProducer(dir, cache16mb)
+}
+
+// failWriteStore wraps a kvdb.Store but returns a batch whose Write() always
+// fails. Put/Delete on the batch succeed so the flush loop completes normally;
+// only the terminal batch.Write() fails.
+type failWriteStore struct {
+	kvdb.Store
+}
+
+func (s *failWriteStore) NewBatch() kvdb.Batch {
+	return &failWriteBatch{}
+}
+
+type failWriteBatch struct {
+	size int
+}
+
+var errBatchWriteFailed = errors.New("injected batch write failure")
+
+func (b *failWriteBatch) Put(key, value []byte) error {
+	b.size += len(key) + len(value)
+	return nil
+}
+
+func (b *failWriteBatch) Delete(key []byte) error {
+	b.size += len(key)
+	return nil
+}
+
+func (b *failWriteBatch) ValueSize() int { return b.size }
+
+func (b *failWriteBatch) Write() error { return errBatchWriteFailed }
+
+func (b *failWriteBatch) Reset() { b.size = 0 }
+
+func (b *failWriteBatch) Replay(w kvdb.Writer) error { return nil }
+
+// TestFlushClearAfterWrite verifies that modified is NOT cleared when the
+// final batch.Write() fails. Before the fix, modified.Clear() and
+// *sizeEstimation = 0 ran before batch.Write(), so a failed write silently
+// discarded all pending data.
+func TestFlushClearAfterWrite(t *testing.T) {
+	require := require.New(t)
+
+	// Use devnulldb as the underlying reader; override NewBatch to inject failure.
+	underlying := &failWriteStore{Store: devnulldb.New()}
+	f := WrapWithDrop(underlying, func() {})
+
+	key1 := []byte("key1")
+	val1 := []byte("value1")
+	key2 := []byte("key2")
+	val2 := []byte("value2")
+
+	require.NoError(f.Put(key1, val1))
+	require.NoError(f.Put(key2, val2))
+
+	// Sanity: two pairs are pending before the flush attempt.
+	require.Equal(2, f.NotFlushedPairs())
+	require.Greater(f.NotFlushedSizeEst(), 0)
+
+	// Attempt flush — must fail because NewBatch().Write() returns an error.
+	err := f.Flush()
+	require.Error(err, "flush must propagate the batch write error")
+
+	// After a failed flush the in-memory write buffer must remain intact so
+	// that a subsequent flush can retry.
+	require.Equal(2, f.NotFlushedPairs(),
+		"modified must not be cleared after a failed batch.Write()")
+	require.Greater(f.NotFlushedSizeEst(), 0,
+		"sizeEstimation must not be zeroed after a failed batch.Write()")
+
+	// Data must still be readable from the in-memory cache.
+	got, err := f.Get(key1)
+	require.NoError(err)
+	require.Equal(val1, got, "key1 must still be readable after failed flush")
 }
