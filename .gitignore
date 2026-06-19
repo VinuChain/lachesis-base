@@ -56,3 +56,4 @@ lachesis_*
 
 **/coverage.txt
 .claude/
+.omc/
