@@ -34,4 +34,8 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
+// Mirrors the identical replace in VinuChain/VinuChain's go.mod, so this
+// module's own builds and tests link the go-vinu fork that production links.
+// Go ignores this directive for consumers; the node's own replace is what
+// selects go-vinu in node binaries. Keep the two in sync.
 replace github.com/ethereum/go-ethereum => github.com/VinuChain/go-vinu v1.20.26-quota
